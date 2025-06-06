@@ -184,8 +184,11 @@ async function fetchTrades() {
     .select('trade_data')
     .eq('id', SINGLE_USER_ID)
     .single();
-  if (error && error.code !== 'PGRST116') {
-    console.error('Error fetching trades:', error);
+  if (error) {
+    if (error.code !== 'PGRST116') { // PGRST116 means no rows found
+      console.error('Error fetching trades:', error);
+    }
+    return [];
   }
   return data?.trade_data || [];
 }
@@ -194,7 +197,11 @@ async function upsertTrades(trades: any[]) {
   const { error } = await supabase
     .from('trades')
     .upsert({ id: SINGLE_USER_ID, trade_data: trades }, { onConflict: 'id' });
-  if (error) console.error('Supabase upsert error:', error);
+  if (error) {
+    console.error('Supabase upsert error:', error);
+    return false;
+  }
+  return true;
 }
 
 async function fetchTradeSettings() {
@@ -203,8 +210,20 @@ async function fetchTradeSettings() {
     .select('*')
     .eq('id', SINGLE_USER_ID)
     .single();
-  if (error && error.code !== 'PGRST116') {
-    console.error('Error fetching trade settings:', error);
+  if (error) {
+    if (error.code !== 'PGRST116') { // PGRST116 means no rows found
+      console.error('Error fetching trade settings:', error);
+    }
+    // If no settings found, create default settings
+    const defaultSettings = {
+      id: SINGLE_USER_ID,
+      visible_columns: INITIAL_VISIBLE_COLUMNS,
+      search_query: '',
+      status_filter: '',
+      sort_descriptor: { column: 'tradeNo', direction: 'ascending' }
+    };
+    await upsertTradeSettings(defaultSettings);
+    return defaultSettings;
   }
   return data || {};
 }
@@ -213,7 +232,11 @@ async function upsertTradeSettings(settings: any) {
   const { error } = await supabase
     .from('trade_settings')
     .upsert({ id: SINGLE_USER_ID, ...settings }, { onConflict: 'id' });
-  if (error) console.error('Supabase upsert error:', error);
+  if (error) {
+    console.error('Supabase upsert error:', error);
+    return false;
+  }
+  return true;
 }
 
 // Define INITIAL_VISIBLE_COLUMNS here, as it's closely tied to the hook's state
@@ -236,34 +259,43 @@ export const useTrades = () => {
 
   // Load from Supabase on mount
   React.useEffect(() => {
-    fetchTrades().then((loadedTrades) => {
-      setTrades(loadedTrades);
-      fetchTradeSettings().then((settings) => {
+    const loadData = async () => {
+      try {
+        setIsLoading(true);
+        const [loadedTrades, settings] = await Promise.all([
+          fetchTrades(),
+          fetchTradeSettings()
+        ]);
+        
+        setTrades(loadedTrades);
         setSearchQuery(settings.search_query || '');
         setStatusFilter(settings.status_filter || '');
         setSortDescriptor(settings.sort_descriptor || { column: 'tradeNo', direction: 'ascending' });
         setVisibleColumns(settings.visible_columns || INITIAL_VISIBLE_COLUMNS);
+      } catch (error) {
+        console.error('Error loading data:', error);
+      } finally {
         setIsLoading(false);
-      });
-    });
+      }
+    };
+    
+    loadData();
   }, []);
-
-  // Save trades to Supabase
-  React.useEffect(() => {
-    if (!isLoading) {
-      upsertTrades(trades);
-    }
-  }, [trades, isLoading]);
 
   // Save trade settings to Supabase
   React.useEffect(() => {
     if (!isLoading) {
-      upsertTradeSettings({
-        search_query: searchQuery,
-        status_filter: statusFilter,
-        sort_descriptor: sortDescriptor,
-        visible_columns: visibleColumns
-      });
+      const saveSettings = async () => {
+        const settings = {
+          search_query: searchQuery,
+          status_filter: statusFilter,
+          sort_descriptor: sortDescriptor,
+          visible_columns: visibleColumns
+        };
+        await upsertTradeSettings(settings);
+      };
+      
+      saveSettings();
     }
   }, [searchQuery, statusFilter, sortDescriptor, visibleColumns, isLoading]);
 
